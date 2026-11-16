@@ -80,6 +80,13 @@ Inspecting real video frames under a strict budget of $B=4$ frames:
 * **NMS Memory:** Frame 65 captured the dining area; Frame 298 captured the armchair clearly showing the **purple tape roll** resting on the seat; Frame 398 captured the robot arm manipulating it.
 * When asked *"Where was the purple tape located before pickup?"*, Uniform memory failed completely, while NMS memory answered correctly.
 
+### 5. Causal Online Streaming Eviction
+To eliminate the offline lookahead assumption, we deployed a strictly causal `OnlineStreamingReservoir` buffer across all 100 validation episodes (5,870 queries):
+* $B=4$: **$0.4236$** hit rate (vs. uniform $0.2799$, a **$+14.4\%$** boost).
+* $B=8$: **$0.6425$** hit rate (vs. uniform $0.4942$, a **$+14.8\%$** boost).
+* $B=16$: **$0.8180$** hit rate (vs. uniform $0.7427$, a **$+7.5\%$** boost).
+* The online reservoir dynamically evicts lower-utility observations in real-time, proving that the temporal refractory policy works online with zero future knowledge.
+
 ---
 
 ## The Cross-Embodiment Perspective
@@ -108,7 +115,7 @@ A memory policy cannot assume a specific camera mounting or locomotion style:
 | **Ablation Studies** | **Done** | Swept suppression window $\alpha \in [0.1, 2.0]$, confirming $\alpha^* = 0.5$ is optimal |
 | **Cross-Embodiment Analysis** | **Done** | Evaluated across Navigation vs. Manipulation task domains and camera dynamics |
 | **Final Technical Report** | **Done** | Comprehensive, self-contained report at [reports/Final_report.md](reports/Final_report.md) |
-| **Streaming Reservoir Eviction** | Future Work | Currently runs offline per episode; online streaming buffer left as Phase 4 |
+| **Streaming Reservoir Eviction** | **Done** | Causal online buffer evaluated live on FindingDory validation (0.4236 at B=4 vs 0.2799 uniform) |
 
 ---
 
