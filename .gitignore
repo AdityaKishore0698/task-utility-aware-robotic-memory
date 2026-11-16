@@ -1,0 +1,18 @@
+# OS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Downloaded / generated data (reproducible via src/scripts/download_findingdory.py)
+/data/
+# Experiment outputs are code-reviewable artifacts (small CSV/JSON) and are tracked;
+# large or scratch outputs should go under experiments/**/scratch/ instead.
+experiments/**/scratch/
+
+# Office lock files
+~$*.docx
+~$*.xlsx
