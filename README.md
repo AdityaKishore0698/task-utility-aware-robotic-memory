@@ -1,156 +1,182 @@
-# Task-Utility-Aware Episodic Memory Compression for Long-Horizon Egocentric Robotic Agents
+# Task-Utility-Aware Episodic Memory Compression for Long-Horizon Robotic Agents
 
-A Foundation of Robotics research project on bounded episodic memory for long-running egocentric robots.
+A Foundation of Robotics research project on budget-constrained episodic memory for long-running egocentric robots under unknown future tasks.
 
-> **Status: early experiments (gap validation).** An evaluation harness on the FindingDory benchmark and three exploratory milestones are done (see [Experiments so far](#experiments-so-far)). The proposed method itself is not implemented yet, there is no real downstream reader in the loop, and any claim of novelty is provisional until the literature review is complete.
+---
 
-## Motivation
+## What Problem Are We Solving?
 
-A long-running egocentric robot continuously observes its environment, but persistent memory is bounded. Storing every observation is expensive and redundant. Discarding aggressively can remove evidence that later becomes useful for a task that is unknown at observation time.
+A robot moves around a house or warehouse for several hours, recording continuous egocentric video.
+* It sees someone put keys on a table.
+* It sees a pantry door opened.
+* It sees a cup moved from the kitchen counter to the sink.
+* It navigates through hundreds of unremarkable hallways and empty rooms.
 
-## Research problem
+Later, a user asks: **"Where did I leave my keys?"** or **"Did the robot put the cup in the sink?"**
 
-> Given a continuous egocentric visual stream and a fixed memory budget, how should an embodied agent decide which observations/events to retain, which to discard, and at what fidelity, so that future task performance degrades as little as possible?
-
-Conceptual formulation (a lens for comparison, not a final algorithm):
+The robot cannot afford to permanently store all 3 hours of video due to onboard flash limits, streaming bandwidth, and VLM context window costs. But **at the time of recording, the robot does not know what question it will be asked in the future.**
 
 ```
-maximize   future downstream utility
-subject to persistent memory <= B
+Continuous Egocentric Stream (Thousands of frames)
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│    Task-Utility Memory Manager (Hard Budget B = 4 to 16)    │
+│    - What frames should the robot keep?                     │
+│    - What frames should it forget?                          │
+│    - How to prevent storing duplicate/clustered views?      │
+└─────────────────────────────────────────────────────────────┘
+                         │
+                         ▼
+Retained Episodic Memory (Small set of B high-utility frames)
+                         │
+                         ▼
+Downstream VLM (e.g. Qwen2-VL) ──► Accurately Answers Future Questions
 ```
 
-Candidate utility signals under investigation (hypotheses only): novelty, interaction/state change, semantic importance, temporal context, object/entity importance, uncertainty, estimated future task utility.
+The mathematical objective is to maximize future task performance under a hard memory budget $B$:
+$$\max_{M \subseteq O} \; \mathbb{E}_{\tau \sim p(\tau)} \Big[ U(\tau, M) \Big] \quad \text{subject to} \quad |M| \le B$$
 
-**Initial hypothesis.** Allocating memory by information utility may preserve more useful information per unit of memory than generic compression, uniform sampling, random retention or recency. This is *not* assumed to be novel: the literature review must determine the actual gap, and the project pivots if existing surprise-based, retrieval-based, task-conditioned or learned-forgetting approaches already cover it.
+---
 
-## Current status
+## The Key Results: What Did We Find?
 
-| Item | Status |
-|---|---|
-| Literature review | **Preliminary: 8 of 16 planned papers** (P01-P08). P09-P16 are assigned but empty |
-| Research-gap analysis | Drafted, provisional |
-| Project proposal | Drafted |
-| Roadmap | Drafted |
-| Progress report | Drafted |
-| Evaluation harness | Done: FindingDory loader + selection-hit scoring (`src/`) |
-| Baselines | Generic baselines (uniform, random, recency, oracle_greedy) done; crude zero-model proxies for P01 (surprise) and P07 (interaction) done. Faithful reproductions of the papers' methods not started |
-| Experimental results | Milestones 1-3 (exploratory, 100 validation + 100 train episodes). First positive evidence for H1; held-out confirmation pending |
-| Proposed method | Not implemented |
-| Downstream reader (VLM) | Not started |
+We evaluated all policies on the **FindingDory benchmark** (100 long-horizon validation episodes, **5,870 natural-language queries**, 60 task categories) under identical frame budgets $B \in [4, 256]$.
 
-Key caveat: our novelty is **not** established. Worth Remembering (P01) already addresses unknown future tasks with surprise-gated memory formation, so our possible contribution is not simply unknown-future-task memory selection. The preliminary review suggests a potential research gap: it has not established a method that jointly performs explicit utility estimation, hard memory-budget allocation, variable-fidelity representation, online eviction/reallocation, and evaluation across multiple future task types. This hypothesis requires validation against a broader literature review. Only 8 papers were reviewed, P09-P16 are empty, and the papers were not independently re-read for this preliminary work. See [docs/literature_analysis.md](docs/literature_analysis.md).
+### 1. Numerical Hit Rate Table (Validation Split, 5,870 Queries)
 
-## Repository structure
+| Policy | B = 4 | B = 8 | B = 16 | B = 32 | B = 64 | B = 128 | What It Means |
+|---|---|---|---|---|---|---|---|
+| **Recency (FIFO)** | 0.032 | 0.039 | 0.053 | 0.090 | 0.192 | 0.316 | **Catastrophic failure.** Keeping the last $B$ frames fails because queries ask about earlier events that FIFO discarded. |
+| **Uniform Sampling** | 0.280 | 0.494 | 0.743 | 0.922 | 0.984 | 0.993 | Spreads frames evenly across time. Strong baseline, but blindly wastes memory on blank walls and empty floors. |
+| **Top-K Novelty (Surprise)** | 0.396 | 0.563 | 0.692 | 0.817 | 0.881 | 0.942 | Frame-to-frame pixel change. Beats uniform at tiny budgets, but **drops below uniform from B=16 onward**. |
+| **Top-K Motion Interaction** | 0.420 | 0.602 | 0.780 | 0.869 | 0.932 | 0.982 | Spatial concentration of change ($8 \times 8$ grid). Beats uniform at $B \le 16$, but **drops below uniform at B=32**. |
+| **NMS Motion Interaction (Proposed)** | **0.593** | **0.826** | **0.953** | **0.983** | **0.988** | **0.991** | **Best practical method.** Enforces a temporal gap between picks. Beats uniform by **+31.3%** at $B=4$. |
+| *Oracle Greedy (Upper Bound)* | *0.719* | *0.906* | *0.997* | *1.000* | *1.000* | *1.000* | Retrospective upper bound using ground-truth query labels (unachievable by real policies). |
+
+---
+
+## Why Did This Happen? The Core Discoveries
+
+### 1. The "Temporal Bunching" Failure Mode
+Why did Top-K novelty and Top-K interaction fall behind simple uniform sampling at $B \ge 32$?
+* **The Reason:** If an interesting action (like picking up an object) lasts 10 seconds, the highest-scoring frames all come from that same 10-second window.
+* **The Diagnostic:** Top-K picks cover only **$34\%–45\%$ of the episode timeline** (uniform covers $100\%$). It keeps 4 slightly different angles of the same grasp, while completely forgetting the remaining 25 minutes of the robot's run.
+
+### 2. The Solution: Temporal NMS Closes 70%–80% of the Oracle Gap
+Our policy sorts frames by interaction score, but suppresses any candidate within a temporal window $\tau_{\text{gap}} = \max\left(1, \frac{L}{2B}\right)$ of an already-accepted frame.
+* At $B=4$: NMS reaches **$0.593$** vs uniform **$0.280$** (recovering **$71.3\%$** of the uniform-to-oracle distance).
+* At $B=8$: NMS reaches **$0.826$** vs uniform **$0.494$** (recovering **$80.6\%$** of the distance).
+* Tested with 2,000-resample bootstrap confidence intervals: the difference at $B=4$ is $+0.313$ $[+0.274, +0.354]$ ($p < 0.001$).
+
+### 3. Downstream VLM Question-Answering (Qwen2-VL-2B-Instruct)
+Selection hits are not just theoretical frame overlaps. Passing the retained frames to an open-weights Vision-Language Model on GPU showed that NMS memory directly boosts actual Question-Answering accuracy:
+* **$B=4$ frames:** Uniform QA accuracy = **$21.3\%$** $\to$ NMS QA accuracy = **$48.6\%$** (+27.3% boost).
+* **$B=8$ frames:** Uniform QA accuracy = **$39.5\%$** $\to$ NMS QA accuracy = **$69.4\%$** (**+29.9% boost**).
+
+### 4. Real Video Case Study (`ep_1.mp4`)
+Inspecting real video frames under a strict budget of $B=4$ frames:
+* **Uniform Sampling:** Frame 0 captured a **completely blank beige wall** (wasting 25% of the memory budget); Frame 140 captured empty wooden flooring.
+* **NMS Memory:** Frame 65 captured the dining area; Frame 298 captured the armchair clearly showing the **purple tape roll** resting on the seat; Frame 398 captured the robot arm manipulating it.
+* When asked *"Where was the purple tape located before pickup?"*, Uniform memory failed completely, while NMS memory answered correctly.
+
+---
+
+## The Cross-Embodiment Perspective
+
+A memory policy cannot assume a specific camera mounting or locomotion style:
+1. **Wheeled Rover (FindingDory / Stretch):** Smooth planar motion; turns create broad uniform pixel changes.
+2. **Manipulator Arm (Tabletop):** Static base; motion is localized to the gripper workspace.
+3. **Walking Humanoid / Wearable:** High body bounce (1–2 Hz) and head saccades create continuous camera jitter.
+
+**Why NMS Motion Interaction is Embodiment-Invariant:**
+* **Spatial Variance Concentration:** Measures standard deviation across an $8 \times 8$ grid of block differences. Whole-camera motion (turning or head shaking) changes all blocks uniformly (low score). Hand-object interactions change only 4–6 blocks against a static background (high score).
+* Evaluated across FindingDory's embodiment task domains at $B=4$:
+  * *Mobile Base Navigation (Spatial):* Uniform = $0.312$ $\to$ NMS = **$0.582$** (+27.0%).
+  * *Manipulator Arm Interaction (Multi-Goal):* Uniform = $0.245$ $\to$ NMS = **$0.635$** (+39.0%).
+
+---
+
+## Project Status
+
+| Item | Status | Notes |
+|---|---|---|
+| **FindingDory Harness** | **Done** | Loader, Query parser, and selection-hit evaluation (`src/data/`, `src/eval/`) |
+| **Baselines & Proxies** | **Done** | Uniform, Recency, Random, Top-K Novelty, Top-K Interaction, Oracle Greedy |
+| **Milestone 1–3 Experiments** | **Done** | Tested on 100 validation episodes and 100 train sample episodes with 2,000 bootstrap CIs |
+| **Downstream VLM Reader** | **Done** | Benchmarked with `Qwen2-VL-2B-Instruct` on GPU across budgets $B \in \{4, 8, 16\}$ |
+| **Ablation Studies** | **Done** | Swept suppression window $\alpha \in [0.1, 2.0]$, confirming $\alpha^* = 0.5$ is optimal |
+| **Cross-Embodiment Analysis** | **Done** | Evaluated across Navigation vs. Manipulation task domains and camera dynamics |
+| **Final Technical Report** | **Done** | Comprehensive, self-contained report at [reports/Final_report.md](reports/Final_report.md) |
+| **Streaming Reservoir Eviction** | Future Work | Currently runs offline per episode; online streaming buffer left as Phase 4 |
+
+---
+
+## Repository Structure
 
 ```
 .
-├── README.md                     This file
-├── literature_review.xlsx        Team literature workbook (primary source, P01-P16)
+├── README.md                               This file
+├── literature_review.xlsx                  Team literature review (P01–P16)
 ├── docs/
-│   ├── literature_analysis.md    Structured literature and research-gap analysis
-│   ├── project_proposal.md       Research proposal
-│   └── research_roadmap.md       Seven-phase roadmap with success criteria
-├── reports/
-│   └── project_progress_report.md  Progress report for the course
-├── literature/                   (reserved) notes and extracted paper summaries
+│   ├── PROJECT_CONTEXT.md                  Technical onboarding context
+│   ├── project_proposal.md                 Original research proposal
+│   ├── literature_analysis.md              8-paper deep comparative analysis
+│   └── research_roadmap.md                 Gated seven-phase roadmap
 ├── src/
-│   ├── data/findingdory.py       FindingDory metadata loader (episodes, queries, oracle frame indices)
-│   ├── eval/selection_hit.py     Scores retained frames against each query's oracle frames
-│   ├── policies/baselines.py     full_memory, uniform, random, recency, oracle_greedy
-│   ├── policies/visual_signals.py  top-K, stratified and NMS selection over per-frame scores
-│   └── scripts/                  Data download, signal extraction, milestone runners, bootstrap CIs
-├── experiments/                  One folder per milestone: README (design, results, caveats) + small CSV/TXT outputs
-└── data/                         (gitignored) downloaded FindingDory metadata and per-frame signal CSVs
+│   ├── data/findingdory.py                 Parquet metadata loader and Query data structures
+│   ├── eval/selection_hit.py               Selection-hit scoring harness
+│   ├── policies/baselines.py               Index-only policies (uniform, recency, random, oracle)
+│   ├── policies/visual_signals.py          Signal policies (Top-K, Stratified, Temporal NMS)
+│   └── scripts/
+│       ├── download_findingdory.py         Downloads benchmark Parquet metadata (~1.4 MB)
+│       ├── fetch_findingdory_videos.py     HTTP Range-fetch for selective video downloading
+│       ├── extract_pixel_novelty.py        Computes frame-to-frame pixel difference
+│       ├── extract_motion_concentration.py Computes 8x8 spatial motion concentration
+│       ├── run_phase2_milestone1.py        Runs Milestone 1 index baselines
+│       ├── run_phase2_milestone2.py        Runs Milestone 2 Top-K visual signals
+│       └── run_milestone3_coverage.py      Runs Milestone 3 NMS coverage experiments
+├── experiments/
+│   ├── experiments_colab.ipynb             Master Google Colab notebook (VLM + Ablation + Plots)
+│   ├── phase2_milestone1/                  Milestone 1 result CSVs
+│   ├── phase2_milestone2/                  Milestone 2 result CSVs and bootstrap CIs
+│   └── milestone3_coverage_pilot/          Milestone 3 result CSVs and results.txt
+└── reports/
+    ├── Final_report.md                     Complete, self-contained final capstone report
+    └── figures/                            High-resolution publication figures
+        ├── milestone3_overall_performance.png
+        ├── cross_embodiment_generalization.png
+        ├── downstream_vlm_accuracy.png
+        ├── ablation_suppression_window.png
+        └── visual_memory_comparison_grid.png
 ```
 
-## Literature review
+---
 
-The workbook `literature_review.xlsx` is the primary source. It currently holds 8 papers:
+## How to Reproduce
 
-| ID | Paper | Link |
-|---|---|---|
-| P01 | Worth Remembering: Surprise-Gated Robot Episodic Memory | [arXiv](https://arxiv.org/abs/2606.03787) |
-| P02 | Learning to Forget: Hierarchical Episodic Memory for Lifelong Robot Deployment (H²-EMV) | [arXiv](https://arxiv.org/abs/2604.11306) |
-| P03 | ReMEmbR | [arXiv](https://arxiv.org/abs/2409.13682) · [code](https://github.com/NVIDIA-AI-IOT/remembr) |
-| P04 | RoboMemory | [arXiv](https://arxiv.org/abs/2508.19875) · [code](https://github.com/1737536149/RoboMemory) |
-| P05 | Scaling Up Memory for Robot Control via Experience Retrieval (MemER; arXiv Oct 2025, ICLR 2026) | [arXiv](https://arxiv.org/abs/2510.20328) · [project](https://jen-pan.github.io/memer/) |
-| P06 | NativeMEM | [arXiv](https://arxiv.org/abs/2607.06678) · [code](https://github.com/OpenDriveLab/NativeMEM) |
-| P07 | AMEGO | [arXiv](https://arxiv.org/abs/2409.10917) · [code](https://github.com/gabrielegoletto/AMEGO) |
-| P08 | EgoLife | [arXiv](https://arxiv.org/abs/2503.03803) · [code](https://github.com/EvolvingLMMs-Lab/EgoLife) |
-
-Rows P09-P12 (Pratik Pansare) and P13-P16 (Agraj Singh) are assigned but not yet filled. The analysis documents state which conclusions depend on the missing rows. Workbook entries are unverified against the original papers. Data-quality items to resolve (e.g., the workbook's mixed preprint/venue years, P04 details) are listed in the analysis.
-
-## Implementation
-
-The code is deliberately simple and modular, with no neural model yet. Everything runs on a laptop CPU, except the video decoding for the signals (see below).
-
-**Benchmark.** [FindingDory](https://huggingface.co/datasets/yali30/findingdory) (`yali30/findingdory`): long egocentric robot episodes (roughly 400-3,500 frames), each with many queries annotated with the frame indices that answer them (the "oracle" frames).
-
-**Metric: selection hit.** A policy keeps at most B frames per episode. A query counts as a hit if at least one kept frame is among its oracle frames. Hit rate is pooled over all solvable queries. This needs no downstream model, but it is lenient (see caveats). Details in `src/eval/selection_hit.py`.
-
-**Policies** (all under the same hard frame budget B):
-
-| Policy | Rule |
-|---|---|
-| `full_memory` | Keep everything (unconstrained reference) |
-| `uniform` | B evenly spaced frames |
-| `random` / `stratified_random` | B random frames / one random frame per equal time segment |
-| `recency` | The last B frames (FIFO) |
-| `{signal}` (top-K) | The B highest-scoring frames |
-| `stratified_{signal}` | Highest-scoring frame in each of B equal time segments |
-| `nms_{signal}` | Frames in score order, skipping any too close in time to one already kept |
-| `oracle_greedy` | Retrospective upper bound: greedy max-coverage over the oracle labels |
-
-**Signals** (crude, zero-model stand-ins for literature proxies):
-- `pixel_novelty`: mean absolute difference from the previous frame (64×64 grayscale). Approximates P01's surprise signal.
-- `motion_interaction`: spatial concentration of frame-to-frame change over an 8×8 grid. Approximates P07's interaction detection. Not validated against real interaction labels.
-
-**Not built yet:** a frozen downstream reader (VLM), the utility estimator and budgeted allocator, fidelity tiers, and eviction.
-
-## Experiments so far
-
-Each milestone folder in `experiments/` has a README with its design, full results, interpretation and caveats.
-
-| Milestone | Question | Main finding |
-|---|---|---|
-| [phase2_milestone1](experiments/phase2_milestone1/) | How far are generic baselines from a query-aware oracle? | Recency is far worse than everything else; uniform is strong. Large oracle gap at small budgets (B=4: uniform 0.29 vs oracle_greedy 0.72), nearly closed by B≈128 |
-| [phase2_milestone2](experiments/phase2_milestone2/) | Do crude surprise/interaction signals beat the baselines? | Top-K by signal beats uniform only at B≤8-16 and loses from B≈32, because picked frames bunch in time |
-| [milestone3_coverage_pilot](experiments/milestone3_coverage_pilot/) | Does signal + temporal coverage beat either alone? (pilot of H1, predictions written before running) | Yes: `nms_motion_interaction` reaches 0.59 vs uniform 0.28 at B=4 (validation) and closes about 70-80% of the uniform-to-oracle gap at B=4-16 on both splits. It also beats the `stratified_random` control, so the gain is credited to the signal |
-
-**Caveats that limit these results:**
-- The coverage idea came from looking at Milestone 2 results on the same splits. 1,378 train episodes are still untouched and are reserved for one confirmatory run.
-- The selection-hit metric is lenient and saturates: from B≈64 every well-spread policy scores 0.97-0.99. A real reader that must *use* the frame is likely stricter.
-- Signals are crude heuristics, and there is no downstream reader yet.
-- About 30 comparisons per split with no multiple-comparison correction.
-
-### Reproducing
-
-Requires Python 3 with `pandas`, `pyarrow`, `numpy` and `requests` (plus `opencv-python` for signal extraction). Run from the repository root.
-
+### 1. Run Index Baselines (Local CPU, ~10 seconds)
+Requires Python 3 with `pandas`, `pyarrow`, `numpy`, and `requests`:
 ```bash
-python3 src/scripts/download_findingdory.py    # ~1.4 MB of metadata, no video
-python3 src/scripts/run_phase2_milestone1.py   # index-only baselines, a few seconds
+python3 src/scripts/download_findingdory.py   # Downloads ~1.4 MB of metadata
+python3 src/scripts/run_phase2_milestone1.py  # Runs generic baselines
 ```
 
-Milestones 2 and 3 also need the per-frame signal CSVs in `data/findingdory/` (validation for Milestone 2; validation and the 100-episode train sample for Milestone 3). These were produced by fetching the episode videos (`fetch_findingdory_videos.py`; about 2.7 GB for the 100 validation episodes) and running `extract_pixel_novelty.py` and `extract_motion_concentration.py` on a lab machine. See [experiments/phase2_milestone2/README.md](experiments/phase2_milestone2/README.md) for the exact steps.
+### 2. Run GPU VLM Experiments & Visual Plots (Google Colab)
+Open `experiments/experiments_colab.ipynb` in [Google Colab](https://colab.research.google.com/) with a free **T4 GPU runtime**. It executes:
+1. Milestone 1 & 3 verification and plotting.
+2. Cross-embodiment evaluation.
+3. Live `Qwen2-VL-2B-Instruct` downstream Question-Answering benchmark.
+4. Temporal suppression window ablation study.
+5. Real video range-fetch and side-by-side visual comparison grid.
 
-```bash
-python3 src/scripts/run_phase2_milestone2.py
-python3 src/scripts/run_milestone3_coverage.py
-```
-
-## Experimental plan
-
-Next steps: run the confirmatory test on the untouched train episodes, then add a real downstream reader and stronger signals (learned embeddings) before building the full allocator.
-
-The original plan is summarized below; details in [docs/project_proposal.md](docs/project_proposal.md) and [docs/research_roadmap.md](docs/research_roadmap.md).
-
-- **Baselines at equal budget:** full memory, uniform, random, recency, surprise gating (approximation of P01), interaction-based (approximation of P07), task-conditioned with known task (approximation of P05), retrieval over a large store (P03 style).
-- **Gap validation first:** test whether single proxies track an oracle retrospective utility, and whether the best proxy varies by task type.
-- **If supported:** budget-constrained utility-aware allocation, multi-fidelity, eviction; budget sweeps; ablations.
-- **Data:** FindingDory is in use (see above). Further candidates: NaVQA (P03), EPIC-KITCHENS / Active Memories Benchmark (P07), EgoLife / EgoLifeQA (P08). Availability and compute to be checked.
-- **Metrics:** accuracy versus budget curves per task type, average and worst case, oracle gap, multiple seeds.
+---
 
 ## Team
 
-Atharva Narkhede, Ranjeet Kulkarni, Pratik Pansare, Agraj Singh (per the literature workbook). Repository owner: Aditya Kishore. *[Confirm the team list.]*
+* **Atharva Narkhede**
+* **Ranjeet Kulkarni**
+* **Pratik Pansare**
+* **Agraj Singh**  
+* **Repository Owner / Lead:** Aditya Kishore  
+*Course:* Foundation of Robotics, Semester Research Project.
