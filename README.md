@@ -125,7 +125,7 @@ Each milestone folder in `experiments/` has a README with its design, full resul
 
 ### Reproducing
 
-Requires Python 3 with `pandas`, `numpy` and `requests` (plus `opencv-python` for signal extraction). Run from the repository root.
+Requires Python 3 with `pandas`, `pyarrow`, `numpy` and `requests` (plus `opencv-python` for signal extraction). Run from the repository root.
 
 ```bash
 python3 src/scripts/download_findingdory.py    # ~1.4 MB of metadata, no video
