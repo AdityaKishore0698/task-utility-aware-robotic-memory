@@ -13,6 +13,9 @@ venv/
 # large or scratch outputs should go under experiments/**/scratch/ instead.
 experiments/**/scratch/
 
+# Archives
+*.zip
+
 # Office lock files
 ~$*.docx
 ~$*.xlsx
