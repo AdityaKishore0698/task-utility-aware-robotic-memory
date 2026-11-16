@@ -2,7 +2,7 @@
 
 A Foundation of Robotics research project on bounded episodic memory for long-running egocentric robots.
 
-> **Status: literature-review stage.** No method has been implemented and no experiments have been run. Any claim of novelty is provisional until the literature review is complete.
+> **Status: early experiments (gap validation).** An evaluation harness on the FindingDory benchmark and three exploratory milestones are done (see [Experiments so far](#experiments-so-far)). The proposed method itself is not implemented yet, there is no real downstream reader in the loop, and any claim of novelty is provisional until the literature review is complete.
 
 ## Motivation
 
@@ -32,9 +32,11 @@ Candidate utility signals under investigation (hypotheses only): novelty, intera
 | Project proposal | Drafted |
 | Roadmap | Drafted |
 | Progress report | Drafted |
-| Baseline reproduction | Not started |
+| Evaluation harness | Done: FindingDory loader + selection-hit scoring (`src/`) |
+| Baselines | Generic baselines (uniform, random, recency, oracle_greedy) done; crude zero-model proxies for P01 (surprise) and P07 (interaction) done. Faithful reproductions of the papers' methods not started |
+| Experimental results | Milestones 1-3 (exploratory, 100 validation + 100 train episodes). First positive evidence for H1; held-out confirmation pending |
 | Proposed method | Not implemented |
-| Experimental results | None |
+| Downstream reader (VLM) | Not started |
 
 Key caveat: our novelty is **not** established. Worth Remembering (P01) already addresses unknown future tasks with surprise-gated memory formation, so our possible contribution is not simply unknown-future-task memory selection. The preliminary review suggests a potential research gap: it has not established a method that jointly performs explicit utility estimation, hard memory-budget allocation, variable-fidelity representation, online eviction/reallocation, and evaluation across multiple future task types. This hypothesis requires validation against a broader literature review. Only 8 papers were reviewed, P09-P16 are empty, and the papers were not independently re-read for this preliminary work. See [docs/literature_analysis.md](docs/literature_analysis.md).
 
@@ -51,8 +53,14 @@ Key caveat: our novelty is **not** established. Worth Remembering (P01) already 
 ├── reports/
 │   └── project_progress_report.md  Progress report for the course
 ├── literature/                   (reserved) notes and extracted paper summaries
-├── src/                          (reserved) implementation, empty for now
-└── experiments/                  (reserved) experiment configs, logs, results, empty for now
+├── src/
+│   ├── data/findingdory.py       FindingDory metadata loader (episodes, queries, oracle frame indices)
+│   ├── eval/selection_hit.py     Scores retained frames against each query's oracle frames
+│   ├── policies/baselines.py     full_memory, uniform, random, recency, oracle_greedy
+│   ├── policies/visual_signals.py  top-K, stratified and NMS selection over per-frame scores
+│   └── scripts/                  Data download, signal extraction, milestone runners, bootstrap CIs
+├── experiments/                  One folder per milestone: README (design, results, caveats) + small CSV/TXT outputs
+└── data/                         (gitignored) downloaded FindingDory metadata and per-frame signal CSVs
 ```
 
 ## Literature review
@@ -72,24 +80,75 @@ The workbook `literature_review.xlsx` is the primary source. It currently holds 
 
 Rows P09-P12 (Pratik Pansare) and P13-P16 (Agraj Singh) are assigned but not yet filled. The analysis documents state which conclusions depend on the missing rows. Workbook entries are unverified against the original papers. Data-quality items to resolve (e.g., the workbook's mixed preprint/venue years, P04 details) are listed in the analysis.
 
-## Planned implementation
+## Implementation
 
-Not started. The plan is deliberately simple and modular, with no complex neural architecture until existing methods and the research gap are understood:
+The code is deliberately simple and modular, with no neural model yet. Everything runs on a laptop CPU, except the video decoding for the signals (see below).
 
-1. A common evaluation harness with a **frozen downstream reader** and a single budget-accounting scheme.
-2. Interchangeable memory policies: uniform, random, recency, surprise gating, interaction-based, and (later) utility-aware allocation.
-3. A pluggable utility estimator and a budgeted allocator (keep / evict / re-compress, with fidelity tiers) only if the gap-validation phase supports it.
+**Benchmark.** [FindingDory](https://huggingface.co/datasets/yali30/findingdory) (`yali30/findingdory`): long egocentric robot episodes (roughly 400-3,500 frames), each with many queries annotated with the frame indices that answer them (the "oracle" frames).
 
-Code will live in `src/`.
+**Metric: selection hit.** A policy keeps at most B frames per episode. A query counts as a hit if at least one kept frame is among its oracle frames. Hit rate is pooled over all solvable queries. This needs no downstream model, but it is lenient (see caveats). Details in `src/eval/selection_hit.py`.
+
+**Policies** (all under the same hard frame budget B):
+
+| Policy | Rule |
+|---|---|
+| `full_memory` | Keep everything (unconstrained reference) |
+| `uniform` | B evenly spaced frames |
+| `random` / `stratified_random` | B random frames / one random frame per equal time segment |
+| `recency` | The last B frames (FIFO) |
+| `{signal}` (top-K) | The B highest-scoring frames |
+| `stratified_{signal}` | Highest-scoring frame in each of B equal time segments |
+| `nms_{signal}` | Frames in score order, skipping any too close in time to one already kept |
+| `oracle_greedy` | Retrospective upper bound: greedy max-coverage over the oracle labels |
+
+**Signals** (crude, zero-model stand-ins for literature proxies):
+- `pixel_novelty`: mean absolute difference from the previous frame (64×64 grayscale). Approximates P01's surprise signal.
+- `motion_interaction`: spatial concentration of frame-to-frame change over an 8×8 grid. Approximates P07's interaction detection. Not validated against real interaction labels.
+
+**Not built yet:** a frozen downstream reader (VLM), the utility estimator and budgeted allocator, fidelity tiers, and eviction.
+
+## Experiments so far
+
+Each milestone folder in `experiments/` has a README with its design, full results, interpretation and caveats.
+
+| Milestone | Question | Main finding |
+|---|---|---|
+| [phase2_milestone1](experiments/phase2_milestone1/) | How far are generic baselines from a query-aware oracle? | Recency is far worse than everything else; uniform is strong. Large oracle gap at small budgets (B=4: uniform 0.29 vs oracle_greedy 0.72), nearly closed by B≈128 |
+| [phase2_milestone2](experiments/phase2_milestone2/) | Do crude surprise/interaction signals beat the baselines? | Top-K by signal beats uniform only at B≤8-16 and loses from B≈32, because picked frames bunch in time |
+| [milestone3_coverage_pilot](experiments/milestone3_coverage_pilot/) | Does signal + temporal coverage beat either alone? (pilot of H1, predictions written before running) | Yes: `nms_motion_interaction` reaches 0.59 vs uniform 0.28 at B=4 (validation) and closes about 70-80% of the uniform-to-oracle gap at B=4-16 on both splits. It also beats the `stratified_random` control, so the gain is credited to the signal |
+
+**Caveats that limit these results:**
+- The coverage idea came from looking at Milestone 2 results on the same splits. 1,378 train episodes are still untouched and are reserved for one confirmatory run.
+- The selection-hit metric is lenient and saturates: from B≈64 every well-spread policy scores 0.97-0.99. A real reader that must *use* the frame is likely stricter.
+- Signals are crude heuristics, and there is no downstream reader yet.
+- About 30 comparisons per split with no multiple-comparison correction.
+
+### Reproducing
+
+Requires Python 3 with `pandas`, `numpy` and `requests` (plus `opencv-python` for signal extraction). Run from the repository root.
+
+```bash
+python3 src/scripts/download_findingdory.py    # ~1.4 MB of metadata, no video
+python3 src/scripts/run_phase2_milestone1.py   # index-only baselines, a few seconds
+```
+
+Milestones 2 and 3 also need the per-frame signal CSVs in `data/findingdory/` (validation for Milestone 2; validation and the 100-episode train sample for Milestone 3). These were produced by fetching the episode videos (`fetch_findingdory_videos.py`; about 2.7 GB for the 100 validation episodes) and running `extract_pixel_novelty.py` and `extract_motion_concentration.py` on a lab machine. See [experiments/phase2_milestone2/README.md](experiments/phase2_milestone2/README.md) for the exact steps.
+
+```bash
+python3 src/scripts/run_phase2_milestone2.py
+python3 src/scripts/run_milestone3_coverage.py
+```
 
 ## Experimental plan
 
-Summarized here; details in [docs/project_proposal.md](docs/project_proposal.md) and [docs/research_roadmap.md](docs/research_roadmap.md).
+Next steps: run the confirmatory test on the untouched train episodes, then add a real downstream reader and stronger signals (learned embeddings) before building the full allocator.
+
+The original plan is summarized below; details in [docs/project_proposal.md](docs/project_proposal.md) and [docs/research_roadmap.md](docs/research_roadmap.md).
 
 - **Baselines at equal budget:** full memory, uniform, random, recency, surprise gating (approximation of P01), interaction-based (approximation of P07), task-conditioned with known task (approximation of P05), retrieval over a large store (P03 style).
 - **Gap validation first:** test whether single proxies track an oracle retrospective utility, and whether the best proxy varies by task type.
 - **If supported:** budget-constrained utility-aware allocation, multi-fidelity, eviction; budget sweeps; ablations.
-- **Candidate data:** NaVQA (P03), EPIC-KITCHENS / Active Memories Benchmark (P07), EgoLife / EgoLifeQA (P08). Availability and compute to be checked.
+- **Data:** FindingDory is in use (see above). Further candidates: NaVQA (P03), EPIC-KITCHENS / Active Memories Benchmark (P07), EgoLife / EgoLifeQA (P08). Availability and compute to be checked.
 - **Metrics:** accuracy versus budget curves per task type, average and worst case, oracle gap, multiple seeds.
 
 ## Team
