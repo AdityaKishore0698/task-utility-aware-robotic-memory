@@ -84,7 +84,7 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("""
 **Task-Utility-Aware Episodic Memory**  
 Foundation of Robotics — Course Project  
-*Aditya Kishore, Ranjeet Kulkarni et al.*
+
 """)
 
 # ════════════════════════════════════════════════════════════════════
